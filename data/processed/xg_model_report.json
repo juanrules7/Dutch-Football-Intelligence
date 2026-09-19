@@ -1,0 +1,148 @@
+{
+ "features": [
+  "shots_inside_box",
+  "shots_outside_box",
+  "shots_on_target",
+  "shots_blocked",
+  "big_chances",
+  "corners",
+  "woodwork"
+ ],
+ "cross_season_validation_eredivisie": [
+  {
+   "train": "22/23",
+   "test": "23/24",
+   "r2_match": 0.845,
+   "mae_match": 0.303,
+   "season_xpts_corr": 0.991,
+   "season_xpts_mae": 1.595,
+   "season_xpts_sd_real": 14.311
+  },
+  {
+   "train": "22/23",
+   "test": "24/25",
+   "r2_match": 0.809,
+   "mae_match": 0.3,
+   "season_xpts_corr": 0.989,
+   "season_xpts_mae": 1.489,
+   "season_xpts_sd_real": 12.34
+  },
+  {
+   "train": "22/23",
+   "test": "25/26",
+   "r2_match": 0.764,
+   "mae_match": 0.31,
+   "season_xpts_corr": 0.984,
+   "season_xpts_mae": 1.613,
+   "season_xpts_sd_real": 10.902
+  },
+  {
+   "train": "23/24",
+   "test": "22/23",
+   "r2_match": 0.825,
+   "mae_match": 0.276,
+   "season_xpts_corr": 0.994,
+   "season_xpts_mae": 1.232,
+   "season_xpts_sd_real": 13.51
+  },
+  {
+   "train": "23/24",
+   "test": "24/25",
+   "r2_match": 0.816,
+   "mae_match": 0.29,
+   "season_xpts_corr": 0.989,
+   "season_xpts_mae": 1.546,
+   "season_xpts_sd_real": 12.34
+  },
+  {
+   "train": "23/24",
+   "test": "25/26",
+   "r2_match": 0.763,
+   "mae_match": 0.308,
+   "season_xpts_corr": 0.984,
+   "season_xpts_mae": 1.604,
+   "season_xpts_sd_real": 10.902
+  },
+  {
+   "train": "24/25",
+   "test": "22/23",
+   "r2_match": 0.825,
+   "mae_match": 0.277,
+   "season_xpts_corr": 0.994,
+   "season_xpts_mae": 1.239,
+   "season_xpts_sd_real": 13.51
+  },
+  {
+   "train": "24/25",
+   "test": "23/24",
+   "r2_match": 0.851,
+   "mae_match": 0.289,
+   "season_xpts_corr": 0.991,
+   "season_xpts_mae": 1.648,
+   "season_xpts_sd_real": 14.311
+  },
+  {
+   "train": "24/25",
+   "test": "25/26",
+   "r2_match": 0.762,
+   "mae_match": 0.309,
+   "season_xpts_corr": 0.984,
+   "season_xpts_mae": 1.611,
+   "season_xpts_sd_real": 10.902
+  },
+  {
+   "train": "25/26",
+   "test": "22/23",
+   "r2_match": 0.829,
+   "mae_match": 0.275,
+   "season_xpts_corr": 0.994,
+   "season_xpts_mae": 1.202,
+   "season_xpts_sd_real": 13.51
+  },
+  {
+   "train": "25/26",
+   "test": "23/24",
+   "r2_match": 0.846,
+   "mae_match": 0.298,
+   "season_xpts_corr": 0.991,
+   "season_xpts_mae": 1.534,
+   "season_xpts_sd_real": 14.311
+  },
+  {
+   "train": "25/26",
+   "test": "24/25",
+   "r2_match": 0.81,
+   "mae_match": 0.295,
+   "season_xpts_corr": 0.988,
+   "season_xpts_mae": 1.5,
+   "season_xpts_sd_real": 12.34
+  }
+ ],
+ "cross_season_summary": {
+  "r2_match": 0.812,
+  "mae_match": 0.294,
+  "season_xpts_corr": 0.989,
+  "season_xpts_mae": 1.484,
+  "season_xpts_sd_real": 12.766
+ },
+ "eerste_divisie_training": {
+  "matches_used": 452,
+  "team_rows": 904,
+  "cv_r2": 0.7393662612222195,
+  "cv_mae": 0.32123421065005403,
+  "mean_real_xg": 1.5771017699115042,
+  "season_xpts_corr": 0.9690958253846883,
+  "season_xpts_mae": 1.9044234734603063,
+  "season_xpts_sd_real": 9.243571552520942
+ },
+ "eerste_divisie_coefficients": {
+  "shots_inside_box": 0.0745,
+  "shots_outside_box": 0.0155,
+  "shots_on_target": 0.0402,
+  "shots_blocked": 0.0,
+  "big_chances": 0.2398,
+  "corners": 0.0,
+  "woodwork": 0.0429
+ },
+ "matches_without_any_xg": 0
+}
