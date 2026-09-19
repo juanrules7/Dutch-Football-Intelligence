@@ -28,6 +28,109 @@ def short(name, limit=22):
     return name if len(name) <= limit else name[: limit - 1] + "…"
 
 
+# ------------------------------------------------------------------ radar helpers
+# (label, column, higher is better). "against" columns are flipped so that further out is always better,
+# except in "Activity" where further out simply means more of it.
+RADAR_SETS = {
+    "Attack": [("xG", "xg_final", True), ("Shots", "shots", True), ("Shots on target", "shots_on_target", True),
+               ("Shots inside box", "shots_inside_box", True), ("Big chances", "big_chances", True),
+               ("Touches in opp. box", "touches_opp_box", True), ("Corners", "corners", True), ("xG on target", "xgot", True)],
+    "Build-up & control": [("Possession", "possession", True), ("Passes", "passes", True), ("Pass accuracy", "pass_accuracy", True),
+                           ("Opp.-half passes", "opp_half_passes", True), ("Final-third entries", "final_third_entries", True),
+                           ("Ball recoveries", "ball_recoveries", True), ("Dispossessed", "dispossessed", False)],
+    "Defence (chances conceded)": [("xG against", "xg_final_against", False), ("Shots against", "shots_against", False),
+                                   ("SoT against", "shots_on_target_against", False),
+                                   ("Box shots against", "shots_inside_box_against", False),
+                                   ("Big chances against", "big_chances_against", False),
+                                   ("Opp. touches in our box", "touches_opp_box_against", False),
+                                   ("Corners against", "corners_against", False), ("xGOT against", "xgot_against", False)],
+    "Activity": [("Tackles", "tackles", True), ("Interceptions", "interceptions", True), ("Clearances", "clearances", True),
+                 ("Ball recoveries", "ball_recoveries", True), ("Saves", "saves", True), ("Fouls", "fouls", True),
+                 ("Yellow cards", "yellow_cards", True), ("Km covered", "km_covered", True)],
+}
+RADAR_NOTES = {
+    "Defence (chances conceded)": "Axes are flipped: further out = fewer chances conceded.",
+    "Activity": "Volume, not quality: further out = more of it.",
+    "Build-up & control": "Dispossessed is flipped: further out = loses the ball less.",
+}
+RADAR_COLORS = [BLUE, ORANGE, GREEN, PURPLE, RED, "#16a085"]
+
+
+def _fmt(v):
+    return f"{v:.2f}" if abs(v) < 5 else f"{v:.1f}"
+
+
+def pct_score(pool, col, higher_better):
+    """0-100 rank of each club on a statistic within the pool (100 = best / most)."""
+    s = pool[col]
+    r = (s.rank(method="average") - 1) / max(s.notna().sum() - 1, 1) * 100
+    return r if higher_better else 100 - r
+
+
+def radar_axes(pool, spec, clubs):
+    """Keep the axes every requested club has data for."""
+    keep = []
+    for label, col, hb in spec:
+        if col not in pool.columns or pool[col].notna().sum() < 5:
+            continue
+        if all(pd.notna(pool.loc[pool.club == c, col]).any() for c in clubs):
+            keep.append((label, col, hb))
+    return keep
+
+
+def draw_radar(ax, labels, series, title=None, fontsize=8):
+    """series: [(name, values 0-100, color, filled)]. The dashed ring at 50 is the league median."""
+    n = len(labels)
+    ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    closed = np.append(ang, ang[0])
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_ylim(0, 100)
+    ax.set_yticks([25, 50, 75, 100])
+    ax.set_yticklabels([])
+    ax.set_xticks(ang)
+    ax.set_xticklabels(labels, fontsize=fontsize)
+    ax.tick_params(axis="x", pad=9)
+    ax.grid(color="#cccccc", lw=0.6)
+    ax.spines["polar"].set_color("#cccccc")
+    ax.plot(closed, [50] * (n + 1), color="#7f8c8d", lw=1.1, ls="--")
+    for name, vals, color, filled in series:
+        v = np.append(vals, vals[0])
+        ax.plot(closed, v, color=color, lw=2, label=name)
+        ax.scatter(ang, vals, color=color, s=18, zorder=4)
+        if filled:
+            ax.fill(closed, v, color=color, alpha=0.22)
+    if title:
+        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=22)
+
+
+def radar_grid(pool_series):
+    """2x2 grid of the four radar sets. pool_series: [(name, pool_df, club, color)]. Values are 0-100 ranks in each pool."""
+    fig, axes = plt.subplots(2, 2, figsize=(12, 11.5), subplot_kw={"projection": "polar"})
+    for ax, (set_name, spec) in zip(axes.ravel(), RADAR_SETS.items()):
+        clubs_ok = radar_axes(pool_series[0][1], spec, [pool_series[0][2]])
+        for _, pool, c, _col in pool_series[1:]:
+            clubs_ok = [a for a in clubs_ok if a in radar_axes(pool, spec, [c])]
+        if len(clubs_ok) < 3:
+            ax.axis("off")
+            ax.set_title(f"{set_name}: not enough data", fontsize=10)
+            continue
+        labels = []
+        series = []
+        for i, (name, pool, c, color) in enumerate(pool_series):
+            vals = [pct_score(pool, col, hb)[pool.club == c].iloc[0] for _, col, hb in clubs_ok]
+            series.append((name, np.array(vals), color, i == len(pool_series) - 1 or len(pool_series) == 1))
+        for j, (label, col, _) in enumerate(clubs_ok):
+            raws = [pool.loc[pool.club == c, col].iloc[0] for _, pool, c, _col in pool_series]
+            labels.append(f"{label}\n" + " → ".join(_fmt(r) for r in raws))
+        draw_radar(ax, labels, series, title=set_name)
+    handles, names = axes.ravel()[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, names, loc="upper center", ncol=len(names), fontsize=9.5, frameon=False, bbox_to_anchor=(0.5, 0.995))
+    fig.subplots_adjust(left=0.1, right=0.9, top=0.92, bottom=0.05, wspace=0.65, hspace=0.42)
+    return fig
+
+
 # ------------------------------------------------------------------ data
 @st.cache_data
 def load():
@@ -149,24 +252,34 @@ chance quality), not real points, because real points contain luck.
    for players who were in either Dutch league the year before. It is split between managers by share of games.
 """)
     st.subheader("Fitted trend lines")
-    t = trend.copy()
-    t["line"] = t.apply(lambda r: f"xPts/game = {r['slope']:.3f} × ln(value €m) + {r['intercept']:+.3f}", axis=1)
-    t = t.rename(columns={"league": "League", "line": "Trend line", "n_team_seasons": "Team-seasons",
-                          "r2": "R²", "resid_sd_pg": "Residual SD (xPts/game)"})
-    st.dataframe(t[["League", "Trend line", "Team-seasons", "R²", "Residual SD (xPts/game)"]].round(3),
-                 hide_index=True, width="stretch")
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharey=True)
+    for ax, lg in zip(axes, LEAGUES):
+        p_ = trend[trend.league == lg].iloc[0]
+        d_ = ts[(ts.league == lg) & (~ts.partial) & (~ts.is_reserve)]
+        ax.scatter(d_["squad_value_m"], d_["xpts_pg"] * p_["season_len"], color=BLUE if lg == "Eredivisie" else ORANGE,
+                   s=30, alpha=0.65, edgecolors="white")
+        xs_ = np.linspace(max(d_["squad_value_m"].min() * 0.9, 1), d_["squad_value_m"].max() * 1.1, 200)
+        ax.plot(xs_, (p_["slope"] * np.log(xs_) + p_["intercept"]) * p_["season_len"], color="black", lw=1.6)
+        ax.set_xscale("log")
+        ax.set_title(f"{lg}: xPts/game = {p_['slope']:.2f} × ln(value €m) {p_['intercept']:+.2f}"
+                     f"\nR² {p_['r2']:.2f} · {int(p_['n_team_seasons'])} team-seasons · residual SD {p_['resid_sd_pg']:.2f} xPts/game", fontsize=9)
+        ax.set_xlabel("Squad value (€m, log scale)", fontsize=9)
+        ax.grid(alpha=0.18)
+    axes[0].set_ylabel("xPts per full season", fontsize=9)
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
     st.caption("Fitted on completed seasons only, without the four reserve sides (Jong Ajax, Jong PSV, Jong AZ, Jong Utrecht): "
                "their squad value is a pool of prospects rather than a budget, so it says little about expected results. "
                "They are still shown, marked as reserve sides.")
 
     st.subheader("Where the data comes from")
-    src = pd.DataFrame([
-        ["Eredivisie", "FotMob", "Real xG, all 5 seasons (22/23 – 26/27)"],
-        ["Eerste Divisie", "Sofascore", "Real xG from 25/26; 22/23–24/25 estimated from shot data"],
-        ["Squad & player market values", "Transfermarkt", "Per club and season, both leagues"],
-        ["Managers", "Transfermarkt", "Head-coach spells with appointment / leaving dates"],
-    ], columns=["Data", "Source", "Coverage"])
-    st.dataframe(src, hide_index=True, width="stretch")
+    st.markdown("""
+- **Eredivisie matches, xG and team stats:** FotMob. Real xG in all 5 seasons (22/23 – 26/27).
+- **Eerste Divisie matches, xG and team stats:** Sofascore. Real xG from 25/26; 22/23 – 24/25 estimated from shot data.
+- **Squad and player market values:** Transfermarkt, per club and season, both leagues.
+- **Managers:** Transfermarkt head-coach spells with appointment and leaving dates.
+""")
     st.caption("Only regular-season matches count (no play-offs). FotMob and Sofascore publish identical numbers for the "
                "Eredivisie (checked on 96 team-matches: xG difference 0.000), so the choice of provider does not change the results.")
 
@@ -214,22 +327,31 @@ with tab_cl:
         st.info("No clubs meet that threshold.")
     else:
         fig, ax = plt.subplots(figsize=(9, max(4, len(agg) * 0.36)))
-        vals = agg["avg_skill"][::-1]
-        bars = ax.barh(agg["club"][::-1], vals, color=[GREEN if v >= 0 else RED for v in vals], edgecolor="white")
+        a_ = agg[::-1].reset_index(drop=True)
+        vals = a_["avg_skill"]
+        bars = ax.barh(range(len(a_)), vals, color=[GREEN if v >= 0 else RED for v in vals], edgecolor="white", alpha=0.85)
+        if pool_all:
+            ax.hlines(range(len(a_)), a_["worst"], a_["best"], color="#34495e", lw=1.2, alpha=0.7, zorder=3)
+            ax.scatter(a_["worst"], range(len(a_)), color="#34495e", s=14, zorder=4)
+            ax.scatter(a_["best"], range(len(a_)), color="#34495e", s=14, zorder=4)
+        ax.set_yticks(range(len(a_)))
+        ax.set_yticklabels([f"{c} · €{v:.0f}m" + (f" · {n}s" if pool_all else "") for c, v, n in zip(a_["club"], a_["avg_value"], a_["seasons"])], fontsize=8)
         ax.axvline(0, color="grey", lw=0.9, ls="--")
-        for b_, v in zip(bars, vals):
-            ax.text(v + (0.25 if v >= 0 else -0.25), b_.get_y() + b_.get_height() / 2, f"{v:+.1f}",
-                    va="center", ha="left" if v >= 0 else "right", fontsize=8)
-        ax.margins(x=0.12)
+        x_lab = a_["best"].max() + 0.5 if pool_all else None
+        for b_, v, ab, se in zip(bars, vals, a_["above"], a_["seasons"]):
+            if pool_all:
+                ax.text(x_lab, b_.get_y() + b_.get_height() / 2, f"{v:+.1f}  ({ab}/{se} above trend)", va="center", ha="left", fontsize=8)
+            else:
+                ax.text(v + (0.25 if v >= 0 else -0.25), b_.get_y() + b_.get_height() / 2, f"{v:+.1f}",
+                        va="center", ha="left" if v >= 0 else "right", fontsize=8)
+        ax.margins(x=0.3 if pool_all else 0.12)
         ax.set_xlabel("Average club skill (xPts per season vs value-predicted trend)", fontsize=9)
         ax.set_title(f"{league}: club skill, " + ("completed seasons" if pool_all else season_fmt(season)), fontsize=11)
         ax.grid(axis="x", alpha=0.18)
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
-        show = agg.rename(columns={"club": "Club", "seasons": "Seasons", "avg_skill": "Avg skill", "above": "Seasons above trend",
-                                   "best": "Best season", "worst": "Worst season", "avg_value": "Avg squad value (€m)"})
-        st.dataframe(show.round(1), hide_index=True, width="stretch")
+        st.caption("Labels: club · average squad value" + (" · seasons in the league. Dark whiskers run from the club's worst to best season." if pool_all else "."))
 
     st.divider()
 
@@ -307,7 +429,7 @@ with tab_cl:
     if hist.empty:
         st.info("No data for this club.")
     else:
-        fig, axes = plt.subplots(1, 2, figsize=(11, 3.8))
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
         lab = [f"{r.season}\n{r.league[:3]}" + ("\n(so far)" if r.partial else "") for r in hist.itertuples()]
         vals = hist["club_skill"]
         axes[0].bar(range(len(hist)), vals, color=[GREEN if v >= 0 else RED for v in vals], edgecolor="white", width=0.6)
@@ -324,12 +446,19 @@ with tab_cl:
         axes[1].set_xticklabels(lab, fontsize=8)
         axes[1].set_title("Squad value", fontsize=10)
         axes[1].grid(alpha=0.2)
+        xi = np.arange(len(hist))
+        wd = 0.27
+        axes[2].bar(xi - wd, hist["pts_pg"], wd, color="#34495e", label="Actual pts / game")
+        axes[2].bar(xi, hist["xpts_pg"], wd, color=BLUE, label="xPts / game (deserved)")
+        axes[2].bar(xi + wd, hist["predicted_xpts_pg"], wd, color="#bdc3c7", label="Predicted from squad value")
+        axes[2].set_xticks(xi)
+        axes[2].set_xticklabels(lab, fontsize=8)
+        axes[2].set_title("Points per game: actual vs deserved vs expected", fontsize=10)
+        axes[2].legend(fontsize=7.5, loc="lower right")
+        axes[2].grid(axis="y", alpha=0.2)
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
-        h = hist[["season", "league", "games", "pts", "xpts", "luck", "squad_value_m", "predicted_xpts", "club_skill", "xg_source"]].copy()
-        h.columns = ["Season", "League", "Games", "Pts", "xPts", "Luck (pts − xPts)", "Squad value (€m)", "Predicted xPts", "Club skill", "xG source"]
-        st.dataframe(h.round(1), hide_index=True, width="stretch")
 
 
 # =================================================================== MANAGERS
@@ -393,10 +522,20 @@ with tab_mg:
                     plt.tight_layout()
                     st.pyplot(fig)
                     plt.close(fig)
-            full_tab = aggm.sort_values("skill", ascending=False).rename(columns={
-                "manager": "Manager", "stints": "Stints", "games": "Games", "clubs": "Clubs",
-                "avg_squad_value_m": "Avg squad value (€m)", "skill": "Skill (xPts/season)"})
-            st.dataframe(full_tab.drop(columns="manager_id").round(1), hide_index=True, width="stretch")
+            st.markdown("**Everyone in the selection**")
+            fig, ax = plt.subplots(figsize=(10, 5.2))
+            ax.scatter(aggm["games"], aggm["skill"], s=np.clip(aggm["avg_squad_value_m"], 5, 400) * 1.6 + 20,
+                       c=[GREEN if v >= 0 else RED for v in aggm["skill"]], alpha=0.6, edgecolors="white")
+            for r in pd.concat([best.head(6), worst.head(6)]).itertuples():
+                ax.annotate(short(r.manager, 18), (r.games, r.skill), fontsize=7.5, xytext=(5, 3), textcoords="offset points")
+            ax.axhline(0, color="black", lw=1)
+            ax.set_xlabel("Games managed in the selection", fontsize=9)
+            ax.set_ylabel("Manager skill (xPts per season vs value trend)", fontsize=9)
+            ax.set_title("Skill vs sample size (bubble size = average squad value). More games = more trustworthy", fontsize=10)
+            ax.grid(alpha=0.18)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
 
     st.divider()
     st.markdown("#### Inspect one manager's stints")
@@ -405,7 +544,7 @@ with tab_mg:
     det = stints[stints.manager == chosen].copy()
     det["order"] = det["season"].map({s: i for i, s in enumerate(reversed(SEASONS))})
     det = det.sort_values(["order", "start"])
-    fig, ax = plt.subplots(figsize=(max(7, len(det) * 1.3), 4.6))
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(max(12, len(det) * 2.2), 4.6))
     ax.bar(range(len(det)), det["stint_skill"], color=[GREEN if v >= 0 else RED for v in det["stint_skill"]], edgecolor="white", alpha=0.88, width=0.6)
     for i, v in enumerate(det["stint_skill"]):
         ax.text(i, v + (0.3 if v >= 0 else -0.3), f"{v:+.1f}", ha="center", va="bottom" if v >= 0 else "top", fontsize=8, fontweight="bold")
@@ -415,13 +554,22 @@ with tab_mg:
     ax.set_ylabel("Stint skill (xPts per season vs value trend)", fontsize=9)
     ax.set_title(f"{chosen}: stint by stint", fontsize=11)
     ax.grid(axis="y", alpha=0.2)
+    xi = np.arange(len(det))
+    ax2.vlines(xi, det["predicted_xpts_pg"], det["avg_xpts_pg"], color="#95a5a6", lw=2)
+    ax2.scatter(xi, det["predicted_xpts_pg"], color="#7f8c8d", s=70, marker="_", linewidths=3, label="Expected from squad value", zorder=3)
+    ax2.scatter(xi, det["avg_xpts_pg"], color=BLUE, s=80, edgecolors="white", label="xPts / game under him", zorder=4)
+    ax2.scatter(xi, det["avg_pts_pg"], color="#34495e", s=55, marker="D", edgecolors="white", label="Actual pts / game", zorder=4)
+    ax2.set_xticks(xi)
+    ax2.set_xticklabels([f"{r.club}\n{r.start:%b %y}–{r.end:%b %y}" for r in det.itertuples()], fontsize=8)
+    ax.set_xlim(-0.7, max(len(det), 3) - 0.3)
+    ax2.set_xlim(-0.7, max(len(det), 3) - 0.3)
+    ax2.set_title("What the squad was worth vs what the team produced", fontsize=11)
+    ax2.set_ylabel("Points per game", fontsize=9)
+    ax2.legend(fontsize=8)
+    ax2.grid(axis="y", alpha=0.2)
     plt.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
-    dd = det[["season", "league", "club", "games", "start", "end", "avg_xpts_pg", "avg_pts_pg", "squad_value_m", "stint_skill", "xg_source"]].copy()
-    dd["start"], dd["end"] = dd["start"].dt.date, dd["end"].dt.date
-    dd.columns = ["Season", "League", "Club", "Games", "From", "To", "xPts/game", "Pts/game", "Squad value (€m)", "Skill", "xG source"]
-    st.dataframe(dd.round(2), hide_index=True, width="stretch")
 
 
 # =================================================================== ORGANIC GROWTH
@@ -444,22 +592,26 @@ with tab_og:
                 else "No growth data for this season.")
     else:
         cur = cur.sort_values("growth_m", ascending=False)
-        fig, ax = plt.subplots(figsize=(9, max(4, len(cur) * 0.36)))
-        vals = cur["growth_m"][::-1]
-        bars = ax.barh(cur["club"][::-1], vals, color=[PURPLE if v >= 0 else ORANGE for v in vals], edgecolor="white")
+        fig, (ax, axp) = plt.subplots(1, 2, figsize=(13, max(4, len(cur) * 0.36)), sharey=True, gridspec_kw={"width_ratios": [1.5, 1]})
+        c_ = cur[::-1].reset_index(drop=True)
+        vals = c_["growth_m"]
+        bars = ax.barh(range(len(c_)), vals, color=[PURPLE if v >= 0 else ORANGE for v in vals], edgecolor="white")
+        ax.set_yticks(range(len(c_)))
+        ax.set_yticklabels(c_["club"], fontsize=8)
         ax.axvline(0, color="grey", lw=0.9, ls="--")
-        for b_, v in zip(bars, vals):
-            ax.text(v + (0.4 if v >= 0 else -0.4), b_.get_y() + b_.get_height() / 2, money(v), va="center",
-                    ha="left" if v >= 0 else "right", fontsize=8)
-        ax.margins(x=0.16)
+        for b_, v, nm, ns in zip(bars, vals, c_["n_matched"], c_["n_squad"]):
+            ax.text(v + (0.4 if v >= 0 else -0.4), b_.get_y() + b_.get_height() / 2, f"{money(v)}  ({int(nm)}/{int(ns)} players)",
+                    va="center", ha="left" if v >= 0 else "right", fontsize=7.5)
+        ax.margins(x=0.3)
         ax.set_xlabel("Organic squad value growth (€m)", fontsize=9)
+        axp.barh(range(len(c_)), c_["growth_pct"] * 100, color=[PURPLE if v >= 0 else ORANGE for v in vals], edgecolor="white", alpha=0.6)
+        axp.axvline(0, color="grey", lw=0.9, ls="--")
+        axp.set_xlabel("Growth relative to last season's value of the same players (%)", fontsize=9)
+        axp.tick_params(axis="y", left=False)
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
-        t = cur[["club", "growth_m", "growth_pct", "n_matched", "n_squad", "prev_value_m", "value_m"]].copy()
-        t["growth_pct"] = t["growth_pct"] * 100
-        t.columns = ["Club", "Growth (€m)", "Growth (%)", "Players counted", "Squad size", "Their value last season (€m)", "Their value now (€m)"]
-        st.dataframe(t.round(1), hide_index=True, width="stretch")
+        st.caption("Brackets: players counted (already in the Dutch pool last year) out of squad size.")
 
     st.divider()
     st.markdown("#### Growth over the seasons: average per club")
@@ -484,16 +636,20 @@ with tab_og:
         st.info("No player growth data for this club and season.")
     else:
         top = pd.concat([pl.head(8), pl.tail(5)]).drop_duplicates("player_id")
-        fig, ax = plt.subplots(figsize=(8, max(3, len(top) * 0.4)))
-        ax.barh(top["player_name"][::-1], top["growth"][::-1], color=[PURPLE if v >= 0 else ORANGE for v in top["growth"][::-1]], edgecolor="white")
+        t_ = top[::-1].reset_index(drop=True)
+        fig, ax = plt.subplots(figsize=(9, max(3, len(t_) * 0.42)))
+        bars = ax.barh(range(len(t_)), t_["growth"], color=[PURPLE if v >= 0 else ORANGE for v in t_["growth"]], edgecolor="white")
+        ax.set_yticks(range(len(t_)))
+        ax.set_yticklabels([f"{n} ({p_}, {int(a) if pd.notna(a) else '?'})" for n, p_, a in zip(t_["player_name"], t_["position"], t_["age"])], fontsize=8)
+        for b_, g, pv, nv in zip(bars, t_["growth"], t_["prev_value_m"], t_["value_m"]):
+            ax.text(g + (0.1 if g >= 0 else -0.1), b_.get_y() + b_.get_height() / 2, f"€{pv:.1f}m → €{nv:.1f}m",
+                    va="center", ha="left" if g >= 0 else "right", fontsize=7.5)
         ax.axvline(0, color="grey", lw=0.9)
+        ax.margins(x=0.25)
         ax.set_xlabel("Change in market value (€m)", fontsize=9)
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
-        tp = pl[["player_name", "position", "age", "prev_value_m", "value_m", "growth"]].copy()
-        tp.columns = ["Player", "Position", "Age", "Value last season (€m)", "Value now (€m)", "Change (€m)"]
-        st.dataframe(tp.round(2), hide_index=True, width="stretch")
 
     st.divider()
     st.markdown("#### Managers: organic growth attributed by share of games")
@@ -541,42 +697,76 @@ STAT_LABELS = {
 with tab_td:
     st.subheader(f"Team data: {league}, {season_fmt(season)}")
     st.caption("Per-game averages, built from every regular-season match. Eredivisie from FotMob, Eerste Divisie from Sofascore. "
-               "Metrics only one provider publishes are labelled; they are empty for the other league.")
+               "Metrics only one provider publishes are left out of the radars for the other league.")
     td = tstats[(tstats.league == league) & (tstats.season == season)].copy()
     td = td.merge(ts[["league", "season", "club", "pts", "xpts", "club_skill", "squad_value_m", "is_reserve"]], on=["league", "season", "club"], how="left")
     avail = [c for c in STAT_LABELS if c in td.columns and td[c].notna().any()]
-    view_for = st.multiselect("Statistics", avail, default=[c for c in ["possession", "xg_final", "shots", "shots_on_target", "big_chances", "touches_opp_box", "tackles"] if c in avail],
-                              format_func=lambda c: STAT_LABELS[c], key="td_cols")
-    side = st.radio("Show", ["For (the team)", "Against (the opponent)", "Both"], horizontal=True, key="td_side")
-    cols = ["club", "matches"]
-    for c in view_for:
-        if side in ("For (the team)", "Both"):
-            cols.append(c)
-        if side in ("Against (the opponent)", "Both"):
-            ac = "xga_final" if c == "xg_final" else f"{c}_against"
-            if ac in td.columns:
-                cols.append(ac)
-    show = td[cols].copy()
-    ren = {"club": "Club", "matches": "Games"}
-    for c in cols[2:]:
-        base_c = "xg_final" if c == "xga_final" else c.replace("_against", "")
-        ren[c] = STAT_LABELS.get(base_c, base_c) + (" (against)" if c.endswith("_against") or c == "xga_final" else "")
-    show = show.rename(columns=ren)
-    st.dataframe(show.round(2).sort_values("Club"), hide_index=True, width="stretch")
+    order = SEASONS
+    prev_season = order[order.index(season) + 1] if order.index(season) + 1 < len(order) else None
 
+    # ---- club profile: four radars
+    st.markdown(f"#### {club}: team profile")
+    if club not in set(td["club"]):
+        st.info("No team statistics for this club and season.")
+    else:
+        st.caption(f"Each axis is the club's rank among the {len(td)} {league} clubs this season: **100 = best / most, 0 = worst / least**. "
+                   "The dashed ring is the league median. Under each axis name is the club's value per game.")
+        fig = radar_grid([(club, td, club, BLUE)])
+        st.pyplot(fig)
+        plt.close(fig)
+        st.caption(" ".join(f"**{k}:** {v}" for k, v in RADAR_NOTES.items()))
+
+    # ---- compare clubs
+    st.divider()
+    st.markdown("#### Compare clubs")
+    all_clubs = sorted(td["club"].unique())
+    leader = table[table.club != club]["club"].iloc[0] if len(table) > 1 else None
+    cc1, cc2 = st.columns([2, 1])
+    others = cc1.multiselect("Compare with", [c for c in all_clubs if c != club], default=[leader] if leader in all_clubs else [],
+                             max_selections=4, key=f"td_cmp_{league}_{season}_{club}")
+    set_pick = cc2.selectbox("Radar", list(RADAR_SETS), key="td_set")
+    picked = [club] + others
+    spec = radar_axes(td, RADAR_SETS[set_pick], picked)
+    if club not in set(td["club"]) or len(spec) < 3:
+        st.info("Not enough shared statistics for this selection.")
+    else:
+        series = [(c, np.array([pct_score(td, col, hb)[td.club == c].iloc[0] for _, col, hb in spec]), RADAR_COLORS[i % len(RADAR_COLORS)], len(picked) <= 3)
+                  for i, c in enumerate(picked)]
+        fig, ax = plt.subplots(figsize=(7.5, 7), subplot_kw={"projection": "polar"})
+        draw_radar(ax, [lab for lab, _, _ in spec], series, title=f"{set_pick}: league rank, 100 = best", fontsize=9)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.32, 1.12), fontsize=9, frameon=False)
+        fig.subplots_adjust(left=0.18, right=0.82)
+        st.pyplot(fig)
+        plt.close(fig)
+        if set_pick in RADAR_NOTES:
+            st.caption(RADAR_NOTES[set_pick])
+
+    # ---- this season vs previous
+    st.divider()
+    st.markdown(f"#### {club}: {season_fmt(season)} against the previous season")
+    prev_pool = tstats[(tstats.league == league) & (tstats.season == prev_season)] if prev_season else pd.DataFrame()
+    if prev_season and club in set(prev_pool.get("club", [])) and club in set(td["club"]):
+        st.caption(f"Ranks are within each season's own league table. Under each axis name: {prev_season} → {season} per-game value.")
+        fig = radar_grid([(prev_season, prev_pool, club, "#95a5a6"), (season_fmt(season), td, club, BLUE)])
+        st.pyplot(fig)
+        plt.close(fig)
+    else:
+        st.caption("No previous season in this league for this club.")
+
+    # ---- xG for vs against
     if "xg_final" in td.columns:
+        st.divider()
         st.markdown("#### Chance quality: xG created vs xG conceded (per game)")
-        d = td.dropna(subset=["xg_final", "xga_final"]) if "xga_final" in td.columns else pd.DataFrame()
-        if d.empty and "xg_final_against" in td.columns:
-            d = td.rename(columns={"xg_final_against": "xga_final"}).dropna(subset=["xg_final", "xga_final"])
+        d = td.dropna(subset=["xg_final", "xg_final_against"]) if "xg_final_against" in td.columns else pd.DataFrame()
         if not d.empty:
             fig, ax = plt.subplots(figsize=(8, 6))
             colors = [GREEN if v >= 0 else RED for v in d["club_skill"]]
-            ax.scatter(d["xg_final"], d["xga_final"], c=colors, s=80, edgecolors="white")
+            ax.scatter(d["xg_final"], d["xg_final_against"], c=colors, s=[170 if c == club else 80 for c in d["club"]], edgecolors="white")
             for _, r in d.iterrows():
-                ax.annotate(short(r["club"], 14), (r["xg_final"], r["xga_final"]), fontsize=7.5, xytext=(4, 3), textcoords="offset points")
+                ax.annotate(short(r["club"], 14), (r["xg_final"], r["xg_final_against"]), fontsize=7.5, xytext=(4, 3), textcoords="offset points",
+                            fontweight="bold" if r["club"] == club else "normal")
             ax.axvline(d["xg_final"].mean(), color="grey", lw=0.8, ls="--")
-            ax.axhline(d["xga_final"].mean(), color="grey", lw=0.8, ls="--")
+            ax.axhline(d["xg_final_against"].mean(), color="grey", lw=0.8, ls="--")
             ax.invert_yaxis()
             ax.set_xlabel("xG created per game", fontsize=9)
             ax.set_ylabel("xG conceded per game (axis inverted: up = better defence)", fontsize=9)
@@ -586,30 +776,22 @@ with tab_td:
             st.pyplot(fig)
             plt.close(fig)
 
+    # ---- rank the league on one statistic
+    st.divider()
     st.markdown("#### Rank the league on one statistic")
     if avail:
-        metric = st.selectbox("Statistic", avail, format_func=lambda c: STAT_LABELS[c], key="td_metric")
-        r = td[["club", metric]].dropna().sort_values(metric, ascending=False)
-        fig, ax = plt.subplots(figsize=(9, max(4, len(r) * 0.34)))
-        ax.barh(r["club"][::-1], r[metric][::-1], color=[BLUE if c != club else "#f1c40f" for c in r["club"][::-1]], edgecolor="white")
-        ax.set_xlabel(STAT_LABELS[metric] + " per game", fontsize=9)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-    st.markdown(f"#### {club}: this season against the previous one")
-    cmp_rows = []
-    order = SEASONS
-    prev_season = order[order.index(season) + 1] if order.index(season) + 1 < len(order) else None
-    if prev_season:
-        a = tstats[(tstats.club == club) & (tstats.league == league) & (tstats.season == season)]
-        b = tstats[(tstats.club == club) & (tstats.league == league) & (tstats.season == prev_season)]
-        if len(a) and len(b):
-            for c in avail:
-                if pd.notna(a[c].iloc[0]) and pd.notna(b[c].iloc[0]):
-                    cmp_rows.append([STAT_LABELS[c], b[c].iloc[0], a[c].iloc[0], a[c].iloc[0] - b[c].iloc[0]])
-    if cmp_rows:
-        cmp = pd.DataFrame(cmp_rows, columns=["Statistic", f"{prev_season}", f"{season}", "Change"])
-        st.dataframe(cmp.round(2), hide_index=True, width="stretch")
-    else:
-        st.caption("No previous season in this league for this club.")
+        cr1, cr2 = st.columns([2, 1])
+        metric = cr1.selectbox("Statistic", avail, format_func=lambda c: STAT_LABELS[c], key="td_metric")
+        side = cr2.radio("Side", ["For (the team)", "Against (the opponent)"], horizontal=True, key="td_side")
+        col_ = metric if side.startswith("For") else ("xg_final_against" if metric == "xg_final" else f"{metric}_against")
+        if col_ in td.columns and td[col_].notna().any():
+            r = td[["club", col_]].dropna().sort_values(col_, ascending=False)
+            fig, ax = plt.subplots(figsize=(9, max(4, len(r) * 0.34)))
+            ax.barh(r["club"][::-1], r[col_][::-1], color=[BLUE if c != club else "#f1c40f" for c in r["club"][::-1]], edgecolor="white")
+            ax.axvline(r[col_].mean(), color="grey", lw=0.9, ls="--")
+            ax.set_xlabel(STAT_LABELS[metric] + (" per game" if side.startswith("For") else " conceded per game") + " (dashed = league average)", fontsize=9)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.caption("That statistic has no 'against' version.")
