@@ -60,10 +60,15 @@ def _fmt(v):
     return f"{v:.2f}" if abs(v) < 5 else f"{v:.1f}"
 
 
-def pct_score(pool, col, higher_better):
-    """0-100 rank of each club on a statistic within the pool (100 = best / most)."""
-    s = pool[col]
-    r = (s.rank(method="average") - 1) / max(s.notna().sum() - 1, 1) * 100
+def pct_score(pool, col, higher_better, by=None):
+    """0-100 rank of each club on a statistic (100 = best / most): within the whole pool, or within each group
+    of `by` (e.g. its own league and season) when given."""
+    if by is None:
+        s = pool[col]
+        r = (s.rank(method="average") - 1) / max(s.notna().sum() - 1, 1) * 100
+    else:
+        g = pool.groupby(by)[col]
+        r = (g.rank(method="average") - 1) / (g.transform("count") - 1).clip(lower=1) * 100
     return r if higher_better else 100 - r
 
 
@@ -716,30 +721,58 @@ with tab_td:
         plt.close(fig)
         st.caption(" ".join(f"**{k}:** {v}" for k, v in RADAR_NOTES.items()))
 
-    # ---- compare clubs
+    # ---- compare clubs (any league, any season)
     st.divider()
     st.markdown("#### Compare clubs")
-    all_clubs = sorted(td["club"].unique())
+    st.caption("Pick any clubs from any season and either league, up to 6. The same club in different seasons works too.")
+    all_ts = tstats.merge(ts[["league", "season", "club", "partial", "xg_source"]], on=["league", "season", "club"], how="left")
+    all_ts["entry"] = all_ts["club"] + " · " + all_ts["season"] + " · " + all_ts["league"]
+    all_ts["order"] = all_ts["season"].map({sn: i for i, sn in enumerate(SEASONS)})
+    entries = all_ts.sort_values(["club", "order"])["entry"].tolist()
+    me = f"{club} · {season} · {league}"
     leader = table[table.club != club]["club"].iloc[0] if len(table) > 1 else None
+    leader_e = f"{leader} · {season} · {league}" if leader else None
+    default = [e for e in [me, leader_e] if e in entries]
     cc1, cc2 = st.columns([2, 1])
-    others = cc1.multiselect("Compare with", [c for c in all_clubs if c != club], default=[leader] if leader in all_clubs else [],
-                             max_selections=4, key=f"td_cmp_{league}_{season}_{club}")
+    picked = cc1.multiselect("Clubs (club · season · league)", entries, default=default, max_selections=6,
+                             key=f"td_cmp_{league}_{season}_{club}")
     set_pick = cc2.selectbox("Radar", list(RADAR_SETS), key="td_set")
-    picked = [club] + others
-    spec = radar_axes(td, RADAR_SETS[set_pick], picked)
-    if club not in set(td["club"]) or len(spec) < 3:
-        st.info("Not enough shared statistics for this selection.")
+    basis = st.radio("Rank each club", ["Within its own league and season", "Against all clubs in the selection's pool (both leagues, all seasons)"],
+                     horizontal=True, key="td_basis",
+                     help="First option: a club's rank among the clubs it actually played against that season, so a 90 means it was "
+                          "near the top of its own league. Second option: every club-season in both leagues and all five seasons is "
+                          "ranked together, which puts everything on one scale but mixes leagues of different strength and providers.")
+    pool_all = all_ts.copy()
+    pool_all["club"] = pool_all["entry"]          # radar helpers look clubs up by this column
+    if len(picked) < 1:
+        st.info("Pick at least one club.")
     else:
-        series = [(c, np.array([pct_score(td, col, hb)[td.club == c].iloc[0] for _, col, hb in spec]), RADAR_COLORS[i % len(RADAR_COLORS)], len(picked) <= 3)
-                  for i, c in enumerate(picked)]
-        fig, ax = plt.subplots(figsize=(7.5, 7), subplot_kw={"projection": "polar"})
-        draw_radar(ax, [lab for lab, _, _ in spec], series, title=f"{set_pick}: league rank, 100 = best", fontsize=9)
-        ax.legend(loc="upper right", bbox_to_anchor=(1.32, 1.12), fontsize=9, frameon=False)
-        fig.subplots_adjust(left=0.18, right=0.82)
-        st.pyplot(fig)
-        plt.close(fig)
-        if set_pick in RADAR_NOTES:
-            st.caption(RADAR_NOTES[set_pick])
+        spec = radar_axes(pool_all, RADAR_SETS[set_pick], picked)
+        if len(spec) < 3:
+            st.info("Not enough statistics shared by all the selected clubs (some are only published for one league or season).")
+        else:
+            by = ["league", "season"] if basis.startswith("Within") else None
+            series = []
+            for i, e in enumerate(picked):
+                vals = np.array([pct_score(pool_all, col, hb, by=by)[pool_all.club == e].iloc[0] for _, col, hb in spec])
+                series.append((e, vals, RADAR_COLORS[i % len(RADAR_COLORS)], len(picked) <= 3))
+            fig, ax = plt.subplots(figsize=(8, 7.5), subplot_kw={"projection": "polar"})
+            draw_radar(ax, [lab for lab, _, _ in spec], series,
+                       title=f"{set_pick}: rank, 100 = best" + (" (within own league & season)" if by else " (all clubs pooled)"), fontsize=9)
+            ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=2, fontsize=8.5, frameon=False)
+            fig.subplots_adjust(left=0.12, right=0.88, bottom=0.18)
+            st.pyplot(fig)
+            plt.close(fig)
+            notes = [RADAR_NOTES[set_pick]] if set_pick in RADAR_NOTES else []
+            flags = all_ts[all_ts["entry"].isin(picked)]
+            if flags["partial"].fillna(False).any():
+                notes.append("Includes a season still in progress: few games, so its values will move.")
+            if (flags["xg_source"] == "estimated").any() and set_pick in ("Attack", "Defence (chances conceded)"):
+                notes.append("Includes Eerste Divisie seasons with estimated xG.")
+            if flags["league"].nunique() > 1:
+                notes.append("Different leagues: statistics come from FotMob (Eredivisie) and Sofascore (Eerste Divisie), and the leagues differ in level.")
+            if notes:
+                st.caption(" ".join(notes))
 
     # ---- this season vs previous
     st.divider()
