@@ -111,10 +111,17 @@ def draw_radar(ax, labels, series, title=None, fontsize=8):
         ax.set_title(title, fontsize=10.5, fontweight="bold", pad=22)
 
 
-def radar_grid(pool_series):
-    """2x2 grid of the four radar sets. pool_series: [(name, pool_df, club, color)]. Values are 0-100 ranks in each pool."""
-    fig, axes = plt.subplots(2, 2, figsize=(12, 11.5), subplot_kw={"projection": "polar"})
-    for ax, (set_name, spec) in zip(axes.ravel(), RADAR_SETS.items()):
+def radar_grid(pool_series, radar_sets=None, ncols=2):
+    """Grid of radar sets (RADAR_SETS by default - 4 pillars, 2x2 - or any other {name: [(label, col,
+    higher_better), ...]} dict; the grid is sized to fit however many are given). pool_series:
+    [(name, pool_df, club, color)]. Values are 0-100 ranks in each pool."""
+    radar_sets = radar_sets or RADAR_SETS
+    nrows = -(-len(radar_sets) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5.75 * nrows), subplot_kw={"projection": "polar"})
+    axes_flat = np.array(axes).reshape(-1)
+    for ax in axes_flat[len(radar_sets):]:
+        ax.axis("off")
+    for ax, (set_name, spec) in zip(axes_flat, radar_sets.items()):
         clubs_ok = radar_axes(pool_series[0][1], spec, [pool_series[0][2]])
         for _, pool, c, _col in pool_series[1:]:
             clubs_ok = [a for a in clubs_ok if a in radar_axes(pool, spec, [c])]
@@ -131,7 +138,7 @@ def radar_grid(pool_series):
             raws = [pool.loc[pool.club == c, col].iloc[0] for _, pool, c, _col in pool_series]
             labels.append(f"{label}\n" + " → ".join(_fmt(r) for r in raws))
         draw_radar(ax, labels, series, title=set_name)
-    handles, names = axes.ravel()[0].get_legend_handles_labels()
+    handles, names = axes_flat[0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, names, loc="upper center", ncol=len(names), fontsize=9.5, frameon=False, bbox_to_anchor=(0.5, 0.995))
     fig.subplots_adjust(left=0.1, right=0.9, top=0.92, bottom=0.05, wspace=0.65, hspace=0.42)
@@ -237,8 +244,8 @@ if row is not None:
                    "before 2025/26). Treat club and manager skill for it as approximate.")
 st.divider()
 
-tab_fw, tab_cl, tab_mg, tab_og, tab_td, tab_mc = st.tabs([
-    "Framework", "Clubs", "Managers", "Organic Growth", "Team Data", "Match Center",
+tab_fw, tab_cl, tab_mg, tab_og, tab_td, tab_ss, tab_mc = st.tabs([
+    "Framework", "Clubs", "Managers", "Organic Growth", "Team Data", "Season Stats", "Match Center",
 ])
 
 
@@ -832,7 +839,7 @@ with tab_td:
             st.caption("That statistic has no 'against' version.")
 
 
-# =================================================================== MATCH CENTER
+# =================================================================== SEASON STATS + MATCH CENTER (shared load)
 @st.cache_data
 def load_match_center():
     return mc.load_match_center()
@@ -844,6 +851,112 @@ try:
 except FileNotFoundError:
     MC_AVAILABLE = False
 
+SEASON_RADAR_SETS = {
+    "Passing": [("Passes/game", "totalPass_pg", True), ("Pass accuracy", "pass_accuracy", True),
+                ("Crosses/game", "totalCross_pg", True), ("Cross accuracy", "cross_accuracy", True),
+                ("Key passes/game", "keyPass_pg", True), ("xA/game", "expectedAssists_pg", True)],
+    "Duels & carrying": [("Duels won %", "duel_win_pct", True), ("Aerial duels won %", "aerial_win_pct", True),
+                         ("Dribbles won %", "dribble_win_pct", True), ("Dribbles/game", "totalContest_pg", True),
+                         ("Carries/game", "ballCarriesCount_pg", True), ("Progressive carries/game", "progressiveBallCarriesCount_pg", True)],
+    "Defending": [("Tackles/game", "totalTackle_pg", True), ("Interceptions/game", "interceptionWon_pg", True),
+                 ("Clearances/game", "totalClearance_pg", True), ("Recoveries/game", "ballRecovery_pg", True),
+                 ("Fouls/game", "fouls_pg", False)],
+    "Attacking output": [("Shots/game", "totalShots_pg", True), ("Big chances/game", "bigChanceCreated_pg", True),
+                         ("Goals/game", "goals_pg", True), ("Touches/game", "touches_pg", True)],
+    "Physical (tracking data)": [("Km covered/game", "kilometersCovered_pg", True), ("Sprints/game", "numberOfSprints_pg", True),
+                                 ("High-speed running/game (km)", "metersCoveredHighSpeedRunningKm_pg", True),
+                                 ("Sprint distance/game (km)", "metersCoveredSprintingKm_pg", True),
+                                 ("Running distance/game (km)", "metersCoveredRunningKm_pg", True),
+                                 ("Top speed this season (km/h)", "top_speed_max", True)],
+}
+SEASON_RANK_STATS = {lab: col for grp in SEASON_RADAR_SETS.values() for lab, col, _ in grp}
+
+with tab_ss:
+    st.subheader("Season Stats: whole-team season averages from the same Sofascore event data")
+    st.caption("Every club's totals across its 2025/26 matches so far, turned into per-game rates and percentile "
+               "ranks within its own league - passing, duels, dribbling/carrying, defending, attacking output and "
+               "player-tracking (GPS) data. Team-level only (see Match Center below for single matches and players).")
+    if not MC_AVAILABLE:
+        st.warning("No match-detail data yet.")
+    else:
+        ssc1, ssc2 = st.columns(2)
+        ss_league = ssc1.selectbox("League", sorted(mc_matches.league.unique()), key="ss_league")
+        ss_season = ssc2.selectbox("Season", sorted(mc_matches[mc_matches.league == ss_league].season.unique(), reverse=True), key="ss_season")
+        team_season = mc.team_season_totals(mc_players, mc_matches, ss_league, ss_season)
+        team_season = team_season.rename(columns={"team": "club"})
+
+        st.markdown("#### Club profile")
+        ss_club = st.selectbox("Club", sorted(team_season.club), key="ss_club")
+        st.caption(f"Each axis is this club's percentile rank among the {len(team_season)} {ss_league} clubs this season "
+                   "(2025/26 so far): **100 = best / most, 0 = worst / least**. The dashed ring is the league median. "
+                   "Under each axis name is the club's per-game value.")
+        fig = radar_grid([(ss_club, team_season, ss_club, BLUE)], radar_sets=SEASON_RADAR_SETS, ncols=3)
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.divider()
+        st.markdown("#### Compare clubs")
+        cmp_clubs = st.multiselect("Compare with", [c for c in team_season.club if c != ss_club], max_selections=3, key="ss_cmp")
+        picked_clubs = [ss_club] + cmp_clubs
+        set_pick = st.selectbox("Radar", list(SEASON_RADAR_SETS), key="ss_set")
+        spec = radar_axes(team_season.assign(club=team_season.club), SEASON_RADAR_SETS[set_pick], picked_clubs)
+        if len(spec) >= 3:
+            series = []
+            for i, cl in enumerate(picked_clubs):
+                vals = np.array([pct_score(team_season, col, hb)[team_season.club == cl].iloc[0] for _, col, hb in spec])
+                series.append((cl, vals, RADAR_COLORS[i % len(RADAR_COLORS)], len(picked_clubs) <= 3))
+            fig, ax = plt.subplots(figsize=(7.5, 7), subplot_kw={"projection": "polar"})
+            draw_radar(ax, [lab for lab, _, _ in spec], series, title=f"{set_pick}: league rank, 100 = best", fontsize=9)
+            ax.legend(loc="upper right", bbox_to_anchor=(1.32, 1.12), fontsize=9, frameon=False)
+            fig.subplots_adjust(left=0.18, right=0.82)
+            st.pyplot(fig)
+            plt.close(fig)
+
+        st.divider()
+        st.markdown(f"#### {ss_club}: season attack zones and shots")
+        ids = mc.attach_team(mc_players, mc_matches)
+        ids = ids[(ids.league == ss_league) & (ids.season == ss_season) & (ids.team == ss_club)]
+        team_heat = mc_heatmap[mc_heatmap.player_id.isin(ids.player_id)]
+        az1, az2 = st.columns(2)
+        with az1:
+            st.caption("Which side of the pitch this club's play happened on this season (own perspective - "
+                       "checked against known left/right-footed fullbacks, so it's not a home/away artefact).")
+            fig, ax = plt.subplots(figsize=(6.5, 1.4))
+            mc.plot_width_thirds(ax, team_heat)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+            st.caption("Same split, attacking third only (x ≥ 66.7) - where the ball actually ends up near goal.")
+            fig, ax = plt.subplots(figsize=(6.5, 1.4))
+            mc.plot_width_thirds(ax, team_heat, min_x=200 / 3)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        with az2:
+            club_matches = mc_matches[(mc_matches.league == ss_league) & (mc_matches.season == ss_season)
+                                      & ((mc_matches.home == ss_club) | (mc_matches.away == ss_club))]
+            club_shots = mc_shots[mc_shots.match_id.isin(club_matches.match_id)]
+            club_shots = club_shots[club_shots.player_id.isin(ids.player_id.unique())]
+            pitch, fig, ax = mc.new_pitch(figsize=(6.5, 5.5))
+            mc.plot_shotmap(pitch, ax, club_shots, title=f"{ss_club}: every shot this season")
+            st.pyplot(fig)
+            plt.close(fig)
+
+        st.divider()
+        st.markdown("#### Rank the league on one stat")
+        rank_lab = st.selectbox("Statistic", list(SEASON_RANK_STATS), key="ss_rank_stat")
+        rank_col = SEASON_RANK_STATS[rank_lab]
+        r = team_season[["club", rank_col]].dropna().sort_values(rank_col, ascending=False)
+        fig, ax = plt.subplots(figsize=(9, max(4, len(r) * 0.34)))
+        ax.barh(r["club"][::-1], r[rank_col][::-1], color=[BLUE if c != ss_club else "#f1c40f" for c in r["club"][::-1]], edgecolor="white")
+        ax.axvline(r[rank_col].mean(), color="grey", lw=0.9, ls="--")
+        ax.set_xlabel(rank_lab + " (dashed = league average)", fontsize=9)
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+
+# =================================================================== MATCH CENTER
 MAP_TYPES = {
     "Heatmap": ("heatmap", None),
     "Shots": ("shots", None),
@@ -917,13 +1030,22 @@ with tab_mc:
             st.pyplot(fig)
             plt.close(fig)
 
-        st.markdown("##### Attack zones: where each team's play concentrated")
+        st.markdown("##### Attack zones: which side of the pitch each team played through")
+        st.caption("Own attacking perspective (not home/away), all touches and attacking-third-only, side by side per team.")
         az1, az2 = st.columns(2)
         for col, is_home, team_name in ((az1, True, mrow.home), (az2, False, mrow.away)):
             with col:
-                pitch, fig, ax = mc.new_pitch(figsize=(6, 4.2))
+                st.caption(f"**{team_name}**")
                 team_ids = mplayers.loc[mplayers.is_home == is_home, "player_id"]
-                mc.plot_team_zones(pitch, ax, mheat[mheat.player_id.isin(team_ids)], title=f"{team_name}: attack zones")
+                team_heat = mheat[mheat.player_id.isin(team_ids)]
+                fig, ax = plt.subplots(figsize=(5.5, 1.3))
+                mc.plot_width_thirds(ax, team_heat)
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig)
+                fig, ax = plt.subplots(figsize=(5.5, 1.3))
+                mc.plot_width_thirds(ax, team_heat, min_x=200 / 3)
+                plt.tight_layout()
                 st.pyplot(fig)
                 plt.close(fig)
 

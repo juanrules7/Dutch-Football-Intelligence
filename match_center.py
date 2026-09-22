@@ -109,14 +109,11 @@ def plot_events(pitch, ax, ev, kinds, title=None, show_legend=True):
         ax.set_title(title, fontsize=10.5, fontweight="bold")
 
 
-def plot_pass_thirds(ax, ev, color=BLUE):
-    """Horizontal-bar breakdown of where a player's passes/crosses started: defensive / middle / attacking third."""
-    d = ev[ev.event_type.isin(["pass", "cross", "throw-in"])]
-    if d.empty:
-        ax.axis("off")
-        return
-    thirds = pd.cut(d.x1, [0, 100 / 3, 200 / 3, 100], labels=["Defensive third", "Middle third", "Attacking third"])
-    pct = thirds.value_counts(normalize=True).reindex(["Defensive third", "Middle third", "Attacking third"]).fillna(0) * 100
+def _thirds_bar(ax, values, labels, color):
+    """Shared drawing code for a 3-bucket 0-100 horizontal percentage bar."""
+    bins = [0, 100 / 3, 200 / 3, 100]
+    thirds = pd.cut(values, bins, labels=labels, include_lowest=True)
+    pct = thirds.value_counts(normalize=True).reindex(labels).fillna(0) * 100
     ax.barh([0], [100], color="#ecf0f1", height=0.6)
     left = 0
     shades = [0.45, 0.7, 1.0]
@@ -124,11 +121,35 @@ def plot_pass_thirds(ax, ev, color=BLUE):
         ax.barh([0], [v], left=left, height=0.6, color=color, alpha=shade)
         if v > 6:
             ax.text(left + v / 2, 0, f"{v:.0f}%", ha="center", va="center", color="white", fontsize=9, fontweight="bold")
-        ax.text(left + v / 2, -0.62, lab.replace(" third", ""), ha="center", va="top", fontsize=7.5, color="#555")
+        ax.text(left + v / 2, -0.62, lab, ha="center", va="top", fontsize=7.5, color="#555")
         left += v
     ax.set_xlim(0, 100)
     ax.set_ylim(-1.1, 0.6)
     ax.axis("off")
+
+
+def plot_pass_thirds(ax, ev, color=BLUE):
+    """Horizontal-bar breakdown of where a player's passes/crosses started: defensive / middle / attacking third
+    (pitch length, x-axis)."""
+    d = ev[ev.event_type.isin(["pass", "cross", "throw-in"])]
+    if d.empty:
+        ax.axis("off")
+        return
+    _thirds_bar(ax, d.x1, ["Defensive third", "Middle third", "Attacking third"], color)
+
+
+def plot_width_thirds(ax, df, x_col="x", y_col="y", color=BLUE, min_x=None):
+    """Horizontal-bar breakdown of which side of the pitch play happened on: right / centre / left (pitch width,
+    y-axis). y is normalised the same way as x - always from the team's own attacking perspective, so this is
+    consistent match to match regardless of which end/side of the stadium a team actually played on (checked: a
+    known left-back averages y~81 and a known right-back y~17 across dozens of matches, home and away alike).
+    `min_x` optionally restricts to the attacking half/third (e.g. min_x=50) so a fullback's own-half progressions
+    don't wash out where their final-third play actually happens."""
+    d = df[df[x_col] >= min_x] if min_x is not None else df
+    if d.empty:
+        ax.axis("off")
+        return
+    _thirds_bar(ax, d[y_col], ["Right", "Centre", "Left"], color)
 
 
 def plot_heatmap(pitch, ax, hm, title=None):
@@ -239,6 +260,76 @@ def plot_avgpos_formation(pitch, ax, avgpos, players, home, away):
             ax.text(xi, yi, lab, ha="center", va="center", color="white", fontsize=8.5, fontweight="bold", zorder=4)
     ax.text(2, 97, home, color=BLUE, fontsize=10, fontweight="bold")
     ax.text(98, 97, away, color=RED, fontsize=10, fontweight="bold", ha="right")
+
+
+def attach_team(players_df, matches_df):
+    """Add league/season/team/opponent columns to a players (or events/shots/heatmap, if it also
+    has match_id + is_home... only players has is_home) table by joining on match_id."""
+    home = matches_df[["match_id", "league", "season", "home", "away"]]
+    d = players_df.merge(home, on="match_id", how="left")
+    d["team"] = np.where(d["is_home"], d["home"], d["away"])
+    d["opponent"] = np.where(d["is_home"], d["away"], d["home"])
+    return d.drop(columns=["home", "away"])
+
+
+SUM_STAT_COLS = ["totalPass", "accuratePass", "totalLongBalls", "accurateLongBalls", "totalCross", "accurateCross",
+                 "keyPass", "expectedAssists", "totalTackle", "wonTackle", "interceptionWon", "totalClearance",
+                 "ballRecovery", "duelWon", "duelLost", "aerialWon", "aerialLost", "totalContest", "wonContest",
+                 "fouls", "wasFouled", "touches", "possessionLostCtrl", "kilometersCovered", "numberOfSprints",
+                 "totalBallCarriesDistance", "ballCarriesCount", "progressiveBallCarriesCount", "goals", "goalAssist",
+                 "totalShots", "onTargetScoringAttempt", "bigChanceCreated", "bigChanceMissed", "offside",
+                 "dispossessed", "totalOffside", "saves", "goalsPrevented",
+                 # physical tracking data (GPS-style, the same "tracking data" already used for ball-carry distance)
+                 "metersCoveredRunningKm", "metersCoveredHighSpeedRunningKm", "metersCoveredSprintingKm"]
+# not summable across matches - topSpeed is already a per-match maximum, so the season figure is a max of maxes
+MAX_STAT_COLS = ["topSpeed"]
+
+
+def team_season_totals(players_df, matches_df, league, season):
+    """One row per club: season totals + per-game rates, built by summing every player-match row
+    for that club (forget individual players - this is a team/season view)."""
+    d = attach_team(players_df, matches_df)
+    d = d[(d.league == league) & (d.season == season)]
+    games = d.groupby("team")["match_id"].nunique().rename("games")
+    cols = [c for c in SUM_STAT_COLS if c in d.columns]
+    tot = d.groupby("team")[cols].sum(min_count=1)
+    out = tot.join(games)
+    for c in cols:
+        out[f"{c}_pg"] = out[c] / out["games"]
+    max_cols = [c for c in MAX_STAT_COLS if c in d.columns]
+    if max_cols:
+        out = out.join(d.groupby("team")[max_cols].max().rename(columns={"topSpeed": "top_speed_max"}))
+    out["pass_accuracy"] = out["accuratePass"] / out["totalPass"] * 100
+    out["cross_accuracy"] = out["accurateCross"] / out["totalCross"] * 100
+    out["duel_win_pct"] = out["duelWon"] / (out["duelWon"] + out["duelLost"]) * 100
+    out["aerial_win_pct"] = out["aerialWon"] / (out["aerialWon"] + out["aerialLost"]) * 100
+    out["dribble_win_pct"] = out["wonContest"] / out["totalContest"] * 100
+    return out.reset_index()
+
+
+def player_season_totals(players_df, matches_df, league, season):
+    """One row per player: season totals + per-90 rates, for players who appeared in this league/season."""
+    d = attach_team(players_df, matches_df)
+    d = d[(d.league == league) & (d.season == season)]
+    games = d.groupby("player_id").agg(games=("match_id", "nunique"), player_name=("player_name", "first"),
+                                       team=("team", lambda s: s.mode().iat[0] if len(s.mode()) else s.iloc[0]),
+                                       position=("position", lambda s: s.mode().iat[0] if len(s.mode()) else s.iloc[0]),
+                                       minutes=("minutesPlayed", "sum"))
+    cols = [c for c in SUM_STAT_COLS if c in d.columns]
+    tot = d.groupby("player_id")[cols].sum(min_count=1)
+    out = games.join(tot)
+    for c in cols:
+        out[f"{c}_p90"] = out[c] / out["minutes"] * 90
+    max_cols = [c for c in MAX_STAT_COLS if c in d.columns]
+    if max_cols:
+        out = out.join(d.groupby("player_id")[max_cols].max().rename(columns={"topSpeed": "top_speed_max"}))
+    out["pass_accuracy"] = out["accuratePass"] / out["totalPass"] * 100
+    out["cross_accuracy"] = out["accurateCross"] / out["totalCross"] * 100
+    out["duel_win_pct"] = out["duelWon"] / (out["duelWon"] + out["duelLost"]) * 100
+    out["aerial_win_pct"] = out["aerialWon"] / (out["aerialWon"] + out["aerialLost"]) * 100
+    out["dribble_win_pct"] = out["wonContest"] / out["totalContest"] * 100
+    out["avg_rating"] = d.groupby("player_id")["rating"].mean()
+    return out.reset_index()
 
 
 def team_totals(players_df):
