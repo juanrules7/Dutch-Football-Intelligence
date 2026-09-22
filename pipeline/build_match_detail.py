@@ -67,7 +67,8 @@ def main():
                 continue
             for p in arr:
                 avgpos.append({"match_id": mid, "side": side, "player_id": p["player"]["id"],
-                               "player_name": p["player"]["name"], "avg_x": p.get("averageX"), "avg_y": p.get("averageY")})
+                               "player_name": p["player"]["name"], "shirt_number": p["player"].get("jerseyNumber"),
+                               "avg_x": p.get("averageX"), "avg_y": p.get("averageY")})
 
         for s in (m.get("shots") or []):
             pc = s.get("playerCoordinates") or {}
@@ -98,20 +99,25 @@ def main():
             ev = p.get("events") or {}
             for pas in ev.get("passes", []):
                 sc, ec = pas.get("playerCoordinates", {}), pas.get("passEndCoordinates", {})
-                events.append({"match_id": mid, "player_id": p["id"], "event_type": "pass", "x1": sc.get("x"), "y1": sc.get("y"),
-                              "x2": ec.get("x"), "y2": ec.get("y"), "outcome": bool(pas.get("outcome")), "keypass": bool(pas.get("keypass"))})
+                # eventActionType is "pass", "cross" or "ball-touch" (a touch that isn't really a pass attempt,
+                # e.g. a flick-on) - kept distinct so a pass map can show crosses differently.
+                events.append({"match_id": mid, "player_id": p["id"], "event_type": pas.get("eventActionType", "pass"),
+                              "x1": sc.get("x"), "y1": sc.get("y"), "x2": ec.get("x"), "y2": ec.get("y"),
+                              "outcome": bool(pas.get("outcome")), "keypass": bool(pas.get("keypass")),
+                              "long_ball": bool(pas.get("isLongBall"))})
             for d in ev.get("dribbles", []):
                 sc = d.get("playerCoordinates", {})
                 events.append({"match_id": mid, "player_id": p["id"], "event_type": "dribble", "x1": sc.get("x"), "y1": sc.get("y"),
-                              "x2": None, "y2": None, "outcome": bool(d.get("outcome")), "keypass": False})
+                              "x2": None, "y2": None, "outcome": bool(d.get("outcome")), "keypass": False, "long_ball": False})
             for d in ev.get("defensive", []):
                 sc = d.get("playerCoordinates", {})
                 events.append({"match_id": mid, "player_id": p["id"], "event_type": d.get("eventActionType", "defensive"),
-                              "x1": sc.get("x"), "y1": sc.get("y"), "x2": None, "y2": None, "outcome": bool(d.get("outcome")), "keypass": False})
+                              "x1": sc.get("x"), "y1": sc.get("y"), "x2": None, "y2": None, "outcome": bool(d.get("outcome")),
+                              "keypass": False, "long_ball": False})
             for c in ev.get("ball-carries", []):
                 sc, ec = c.get("playerCoordinates", {}), c.get("passEndCoordinates", {})
                 events.append({"match_id": mid, "player_id": p["id"], "event_type": "carry", "x1": sc.get("x"), "y1": sc.get("y"),
-                              "x2": ec.get("x"), "y2": ec.get("y"), "outcome": True, "keypass": False})
+                              "x2": ec.get("x"), "y2": ec.get("y"), "outcome": True, "keypass": False, "long_ball": False})
 
     os.makedirs(OUT, exist_ok=True)
 
@@ -126,8 +132,14 @@ def main():
         df.to_parquet(os.path.join(OUT, f"{name}.parquet"), index=False)
         return df
 
+    players_df = pd.DataFrame(players)
+    avgpos_df = pd.DataFrame(avgpos)
+    if not avgpos_df.empty:
+        shirt = avgpos_df[["match_id", "player_id", "shirt_number"]].drop_duplicates(["match_id", "player_id"])
+        players_df = players_df.merge(shirt, on=["match_id", "player_id"], how="left")
+
     save(matches, "match_center_matches", int_cols=["home_score", "away_score", "round"])
-    save(players, "match_center_players")
+    save(players_df, "match_center_players")
     save(events, "match_center_events", float32_cols=["x1", "y1", "x2", "y2"])
     save(shots, "match_center_shots", float32_cols=["x", "y", "xg", "xgot"])
     save(heatmap, "match_center_heatmap", float32_cols=["x", "y"])
