@@ -8,7 +8,7 @@ different spellings, and Transfermarkt calls the reserve sides "<club> U21"
 
 CANON = {
     # ---- FotMob (Eredivisie) ----
-    "ADO Den Haag": "ADO Den Haag", "AZ Alkmaar": "AZ", "Ajax": "Ajax", "Almere City FC": "Almere City",
+    "ADO Den Haag": "ADO Den Haag", "AZ Alkmaar": "AZ", "Ajax": "Ajax", "AFC Ajax": "Ajax", "Almere City FC": "Almere City",
     "Cambuur": "Cambuur", "Excelsior": "Excelsior", "FC Emmen": "Emmen", "FC Groningen": "Groningen",
     "FC Twente": "Twente", "FC Utrecht": "Utrecht", "FC Volendam": "Volendam", "Feyenoord": "Feyenoord",
     "Fortuna Sittard": "Fortuna Sittard", "Go Ahead Eagles": "Go Ahead Eagles", "Heracles": "Heracles",

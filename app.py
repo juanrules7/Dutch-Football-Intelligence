@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import match_center as mc
+
 st.set_page_config(page_title="Dutch Football Intelligence", layout="wide", page_icon="⚽")
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -235,8 +237,8 @@ if row is not None:
                    "before 2025/26). Treat club and manager skill for it as approximate.")
 st.divider()
 
-tab_fw, tab_cl, tab_mg, tab_og, tab_td = st.tabs([
-    "Framework", "Clubs", "Managers", "Organic Growth", "Team Data",
+tab_fw, tab_cl, tab_mg, tab_og, tab_td, tab_mc = st.tabs([
+    "Framework", "Clubs", "Managers", "Organic Growth", "Team Data", "Match Center",
 ])
 
 
@@ -828,3 +830,138 @@ with tab_td:
             plt.close(fig)
         else:
             st.caption("That statistic has no 'against' version.")
+
+
+# =================================================================== MATCH CENTER
+@st.cache_data
+def load_match_center():
+    return mc.load_match_center()
+
+
+try:
+    mc_matches, mc_players, mc_events, mc_shots, mc_heatmap, mc_momentum, mc_avgpos = load_match_center()
+    MC_AVAILABLE = True
+except FileNotFoundError:
+    MC_AVAILABLE = False
+
+MAP_TYPES = {
+    "Heatmap": ("heatmap", None),
+    "Shots": ("shots", None),
+    "Passes": ("events", ["pass"]),
+    "Dribbles": ("events", ["dribble"]),
+    "Defensive actions": ("events", mc.DEF_TYPES),
+    "Ball carries": ("events", ["carry"]),
+}
+
+with tab_mc:
+    st.subheader("Match Center: any match, any player, evented data straight from Sofascore")
+    if not MC_AVAILABLE:
+        st.warning("No match-detail data yet. Run `pipeline/build_match_detail.py` after collecting matches "
+                   "with `collect/js/sofascore_match_detail.js`.")
+    else:
+        st.caption(f"Currently covers **{mc_matches.season.iloc[0]}** for both leagues ({len(mc_matches)} matches). "
+                   "Every pass, dribble, defensive action and ball carry is the real tracked event (start/end pitch "
+                   "coordinates and whether it succeeded), not an estimate — see the Framework tab for how this was collected.")
+
+        c1, c2, c3 = st.columns([1, 1, 2])
+        mc_league = c1.selectbox("League", sorted(mc_matches.league.unique()), key="mc_league")
+        lg_matches = mc_matches[mc_matches.league == mc_league].sort_values("date")
+        rounds = sorted(lg_matches["round"].unique())
+        mc_round = c2.selectbox("Round", rounds, index=len(rounds) - 1, key="mc_round")
+        round_matches = lg_matches[lg_matches["round"] == mc_round].copy()
+        round_matches["label"] = (round_matches["home"] + " " + round_matches["home_score"].astype(str) + " - "
+                                  + round_matches["away_score"].astype(str) + " " + round_matches["away"])
+        mc_label = c3.selectbox("Match", round_matches["label"].tolist(), key="mc_match")
+        mrow = round_matches[round_matches.label == mc_label].iloc[0]
+        mid = mrow.match_id
+
+        st.markdown(f"### {mrow.home} {int(mrow.home_score)} - {int(mrow.away_score)} {mrow.away}")
+        st.caption(f"{mc_league} · round {int(mrow['round'])} · {mrow.date:%d %b %Y}")
+
+        mplayers = mc_players[mc_players.match_id == mid].copy()
+        mplayers["team"] = np.where(mplayers.is_home, mrow.home, mrow.away)
+        mplayers["label"] = mplayers["player_name"] + " (" + mplayers["team"] + (
+            mplayers["substitute"].map({True: ", sub", False: ""}).fillna("")) + ")"
+
+        st.divider()
+        st.markdown("#### Match overview")
+        co1, co2 = st.columns(2)
+        with co1:
+            fig, ax = plt.subplots(figsize=(8, 3.2))
+            mc.plot_momentum(ax, mc_momentum[mc_momentum.match_id == mid], mrow.home, mrow.away)
+            ax.set_title("Match momentum (Sofascore's own xG-based model)", fontsize=10)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        with co2:
+            pitch, fig, ax = mc.new_pitch(figsize=(7.5, 5))
+            mc.plot_avgpos_formation(pitch, ax, mc_avgpos[mc_avgpos.match_id == mid], mplayers, mrow.home, mrow.away)
+            ax.set_title("Starting XI average positions", fontsize=10, pad=10)
+            st.pyplot(fig)
+            plt.close(fig)
+
+        st.markdown("#### Shot map")
+        side_pick = st.radio("Team", [mrow.home, mrow.away, "Both"], horizontal=True, index=2, key="mc_shot_side")
+        msh = mc_shots[mc_shots.match_id == mid].copy()
+        if side_pick != "Both":
+            msh = msh[msh.is_home == (side_pick == mrow.home)]
+        pitch, fig, ax = mc.new_pitch(figsize=(9, 5.5))
+        mc.plot_shotmap(pitch, ax, msh, title=f"{side_pick}: shots (bubble size = xG)")
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.divider()
+        st.markdown("#### Player pitch maps")
+        st.caption("Pick up to 4 players from this match (either team) to compare side by side.")
+        default_players = mplayers.sort_values("rating", ascending=False)["label"].head(2).tolist()
+        picked_labels = st.multiselect("Players", mplayers["label"].tolist(), default=default_players,
+                                       max_selections=4, key=f"mc_players_{mid}")
+        map_pick = st.selectbox("Map", list(MAP_TYPES), key="mc_maptype")
+        source, kinds = MAP_TYPES[map_pick]
+
+        if not picked_labels:
+            st.info("Pick at least one player.")
+        else:
+            cols = st.columns(len(picked_labels))
+            for col, lab in zip(cols, picked_labels):
+                prow = mplayers[mplayers.label == lab].iloc[0]
+                pid = prow.player_id
+                with col:
+                    pitch, fig, ax = mc.new_pitch(figsize=(5, 3.6))
+                    if source == "heatmap":
+                        mc.plot_heatmap(pitch, ax, mc_heatmap[(mc_heatmap.match_id == mid) & (mc_heatmap.player_id == pid)])
+                    elif source == "shots":
+                        mc.plot_shotmap(pitch, ax, mc_shots[(mc_shots.match_id == mid) & (mc_shots.player_id == pid)])
+                    else:
+                        mc.plot_events(pitch, ax, mc_events[(mc_events.match_id == mid) & (mc_events.player_id == pid)],
+                                       kinds, show_legend=False)
+                    ax.set_title(f"{prow.player_name}\n{prow.team} · {prow.position} · {map_pick}", fontsize=9)
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+            st.markdown("##### Rating breakdown")
+            rcols = st.columns(len(picked_labels))
+            for col, lab in zip(rcols, picked_labels):
+                prow = mplayers[mplayers.label == lab].iloc[0]
+                with col:
+                    st.caption(f"**{prow.player_name}** — rating {prow.rating:.1f}"
+                              + (f" (alt. {prow.rating_alternative:.1f})" if pd.notna(prow.rating_alternative) else ""))
+                    fig, ax = plt.subplots(figsize=(3.6, 2.2))
+                    mc.plot_rating_breakdown(ax, prow)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+            st.markdown("##### Key numbers")
+            show_cols = ["player_name", "team", "position", "minutesPlayed", "rating", "touches", "totalPass",
+                        "accuratePass", "keyPass", "expectedAssists", "totalTackle", "interceptionWon",
+                        "totalClearance", "ballRecovery", "duelWon", "aerialWon", "kilometersCovered", "goals"]
+            show_cols = [c for c in show_cols if c in mplayers.columns]
+            tbl = mplayers[mplayers.label.isin(picked_labels)][show_cols].rename(columns={
+                "player_name": "Player", "team": "Team", "position": "Pos", "minutesPlayed": "Min", "rating": "Rating",
+                "touches": "Touches", "totalPass": "Passes", "accuratePass": "Acc. passes", "keyPass": "Key passes",
+                "expectedAssists": "xA", "totalTackle": "Tackles", "interceptionWon": "Interceptions",
+                "totalClearance": "Clearances", "ballRecovery": "Recoveries", "duelWon": "Duels won",
+                "aerialWon": "Aerial won", "kilometersCovered": "Km covered", "goals": "Goals",
+            })
+            st.dataframe(tbl.round(2), hide_index=True, width="stretch")

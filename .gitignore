@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .streamlit/secrets.toml
 .claude/
+# raw Sofascore match-detail dumps (~230MB): rebuild with pipeline/build_match_detail.py,
+# only the processed data/processed/match_center_*.csv tables are committed
+data/raw/match_detail/

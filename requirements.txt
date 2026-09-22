@@ -5,3 +5,5 @@ scipy
 scikit-learn
 matplotlib
 beautifulsoup4
+mplsoccer
+pyarrow
