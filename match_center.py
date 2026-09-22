@@ -152,6 +152,27 @@ def plot_width_thirds(ax, df, x_col="x", y_col="y", color=BLUE, min_x=None):
     _thirds_bar(ax, d[y_col], ["Right", "Centre", "Left"], color)
 
 
+def plot_width_thirds_pitch(pitch, ax, df, x_col="x", y_col="y", color=BLUE, min_x=None, title=None):
+    """Same right/centre/left split as plot_width_thirds, but shaded directly on the pitch as three horizontal
+    bands (darker = more play there) instead of a separate bar - one picture instead of a bar you have to
+    mentally line up against the pitch."""
+    d = df[df[x_col] >= min_x] if min_x is not None else df
+    bins = [0, 100 / 3, 200 / 3, 100]
+    labels = ["Right", "Centre", "Left"]
+    if d.empty:
+        pct = pd.Series([0.0, 0.0, 0.0], index=labels)
+    else:
+        thirds = pd.cut(d[y_col], bins, labels=labels, include_lowest=True)
+        pct = (thirds.value_counts(normalize=True).reindex(labels).fillna(0) * 100)
+    peak = max(pct.max(), 1e-9)
+    for (lab, v), lo, hi in zip(pct.items(), bins[:-1], bins[1:]):
+        ax.axhspan(lo, hi, color=color, alpha=0.12 + 0.6 * (v / peak), zorder=0)
+        ax.text(50, (lo + hi) / 2, f"{lab}\n{v:.0f}%", ha="center", va="center", fontsize=12,
+                fontweight="bold", color="#1a1a1a", zorder=5)
+    if title:
+        ax.set_title(title, fontsize=10.5, fontweight="bold")
+
+
 def plot_heatmap(pitch, ax, hm, title=None):
     if hm.empty:
         ax.text(50, 50, "No data", ha="center", va="center", color=GREY, fontsize=11)
@@ -284,6 +305,57 @@ SUM_STAT_COLS = ["totalPass", "accuratePass", "totalLongBalls", "accurateLongBal
 # not summable across matches - topSpeed is already a per-match maximum, so the season figure is a max of maxes
 MAX_STAT_COLS = ["topSpeed"]
 
+# Same possession adjustment as the Wyscout scouting pipeline (process_data.py): a defensive action's
+# opportunity to happen scales with how much the OPPONENT has the ball (PAdj = x 50/(100-possession)); an
+# attacking/on-the-ball action's opportunity scales with how much THIS team has the ball (OPAdj = x 50/possession).
+# Physical/tracking columns are deliberately left out - running happens regardless of who has the ball.
+PADJ_COLS = ["totalTackle", "wonTackle", "interceptionWon", "totalClearance", "ballRecovery",
+            "duelWon", "duelLost", "aerialWon", "aerialLost", "fouls", "saves", "goalsPrevented"]
+OPADJ_COLS = ["totalPass", "accuratePass", "totalLongBalls", "accurateLongBalls", "totalCross", "accurateCross",
+             "keyPass", "expectedAssists", "totalContest", "wonContest", "touches", "totalBallCarriesDistance",
+             "ballCarriesCount", "progressiveBallCarriesCount", "goals", "goalAssist", "totalShots",
+             "onTargetScoringAttempt", "bigChanceCreated", "bigChanceMissed", "dispossessed",
+             "possessionLostCtrl", "wasFouled"]
+
+
+def load_team_possession():
+    """Each club's 2025/26 average possession % (from the existing FotMob/Sofascore team_stats.csv collection),
+    used to possession-adjust the Sofascore event totals the same way the Wyscout scouting pipeline does."""
+    return pd.read_csv(os.path.join(PROC, "team_possession.csv"))
+
+
+def add_possession_adjustment(out, rate_suffix, possession_df):
+    """Merges each row's club possession % in and adds a `<stat>{rate_suffix}_adj` column for every stat in
+    PADJ_COLS/OPADJ_COLS that has a `<stat>{rate_suffix}` column already (e.g. rate_suffix='_p90' or '_pg')."""
+    poss = possession_df.set_index("team")["possession"] if "team" in possession_df.columns else possession_df.set_index("club")["possession"]
+    out = out.copy()
+    out["possession"] = out["team"].map(poss) if "team" in out.columns else np.nan
+    for c in PADJ_COLS:
+        col = f"{c}{rate_suffix}"
+        if col in out.columns:
+            out[f"{col}_adj"] = out[col] * 50 / (100 - out["possession"])
+    for c in OPADJ_COLS:
+        col = f"{c}{rate_suffix}"
+        if col in out.columns:
+            out[f"{col}_adj"] = out[col] * 50 / out["possession"]
+    return out
+
+
+def add_percentiles(out, rate_cols, by=None):
+    """Adds a `<col>_pctile` (0-100, within `by` groups if given, else the whole pool) for every column in
+    rate_cols that exists - matches the Wyscout scouting app's within-position-and-season percentile ranking."""
+    out = out.copy()
+    for c in rate_cols:
+        if c not in out.columns:
+            continue
+        s = out[c]
+        if by:
+            g = out.groupby(by)[c]
+            out[f"{c}_pctile"] = (g.rank(pct=True) * 100).where(s.notna())
+        else:
+            out[f"{c}_pctile"] = s.rank(pct=True) * 100
+    return out
+
 
 def team_season_totals(players_df, matches_df, league, season):
     """One row per club: season totals + per-game rates, built by summing every player-match row
@@ -304,7 +376,11 @@ def team_season_totals(players_df, matches_df, league, season):
     out["duel_win_pct"] = out["duelWon"] / (out["duelWon"] + out["duelLost"]) * 100
     out["aerial_win_pct"] = out["aerialWon"] / (out["aerialWon"] + out["aerialLost"]) * 100
     out["dribble_win_pct"] = out["wonContest"] / out["totalContest"] * 100
-    return out.reset_index()
+    out = out.reset_index()
+    poss = load_team_possession()
+    poss = poss[(poss.league == league) & (poss.season == season)]
+    out = add_possession_adjustment(out, "_pg", poss)
+    return out
 
 
 def player_season_totals(players_df, matches_df, league, season):
@@ -329,7 +405,25 @@ def player_season_totals(players_df, matches_df, league, season):
     out["aerial_win_pct"] = out["aerialWon"] / (out["aerialWon"] + out["aerialLost"]) * 100
     out["dribble_win_pct"] = out["wonContest"] / out["totalContest"] * 100
     out["avg_rating"] = d.groupby("player_id")["rating"].mean()
-    return out.reset_index()
+    out = out.reset_index()
+
+    poss = load_team_possession()
+    poss = poss[(poss.league == league) & (poss.season == season)]
+    out = add_possession_adjustment(out, "_p90", poss)
+
+    # percentile within the same position group (same convention as the Wyscout scouting app: minimum 900
+    # minutes, like every Wyscout percentile in this project, so a two-game sample doesn't rank #1; and a
+    # minimum 5 players per position group so a tiny group isn't misleading either)
+    MIN_MINUTES = 900
+    pool = out.position.where(out.minutes >= MIN_MINUTES)
+    pos_counts = pool.value_counts()
+    small_positions = pos_counts[pos_counts < 5].index
+    out["pctile_group"] = pool.where(~pool.isin(small_positions))
+    p90_adj_cols = [f"{c}_p90_adj" for c in PADJ_COLS + OPADJ_COLS if f"{c}_p90_adj" in out.columns]
+    physical_p90_cols = [c for c in ("kilometersCovered_p90", "numberOfSprints_p90", "metersCoveredHighSpeedRunningKm_p90",
+                                     "metersCoveredSprintingKm_p90", "metersCoveredRunningKm_p90", "top_speed_max") if c in out.columns]
+    out = add_percentiles(out, p90_adj_cols + physical_p90_cols, by="pctile_group")
+    return out
 
 
 def team_totals(players_df):
@@ -378,3 +472,79 @@ def plot_stat_bars(ax, rows, stat_label, colors):
     ax.margins(x=0.18)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
+
+
+# ------------------------------------------------------------------ player radar (from precomputed percentiles)
+PLAYER_RADAR_SETS = {
+    "Passing": [("Passes/90", "totalPass_p90_adj_pctile"), ("Accurate passes/90", "accuratePass_p90_adj_pctile"),
+                ("Crosses/90", "totalCross_p90_adj_pctile"), ("Key passes/90", "keyPass_p90_adj_pctile"),
+                ("xA/90", "expectedAssists_p90_adj_pctile")],
+    "Dribbling & carrying": [("Dribbles attempted/90", "totalContest_p90_adj_pctile"), ("Dribbles won/90", "wonContest_p90_adj_pctile"),
+                             ("Ball carries/90", "ballCarriesCount_p90_adj_pctile"),
+                             ("Progressive carries/90", "progressiveBallCarriesCount_p90_adj_pctile")],
+    "Defending": [("Tackles/90", "totalTackle_p90_adj_pctile"), ("Interceptions/90", "interceptionWon_p90_adj_pctile"),
+                 ("Clearances/90", "totalClearance_p90_adj_pctile"), ("Recoveries/90", "ballRecovery_p90_adj_pctile"),
+                 ("Duels won/90", "duelWon_p90_adj_pctile"), ("Aerial duels won/90", "aerialWon_p90_adj_pctile")],
+    "Attacking": [("Shots/90", "totalShots_p90_adj_pctile"), ("Big chances created/90", "bigChanceCreated_p90_adj_pctile"),
+                 ("Goals/90", "goals_p90_adj_pctile")],
+    "Physical (tracking data)": [("Km covered/90", "kilometersCovered_p90_pctile"), ("Sprints/90", "numberOfSprints_p90_pctile"),
+                                 ("High-speed running/90", "metersCoveredHighSpeedRunningKm_p90_pctile"),
+                                 ("Sprint distance/90", "metersCoveredSprintingKm_p90_pctile"),
+                                 ("Top speed", "top_speed_max_pctile")],
+}
+
+
+def draw_radar(ax, labels, series, title=None, fontsize=8):
+    """series: [(name, values 0-100, color, filled)]. The dashed ring at 50 is the position-group median
+    (percentiles are already 0-100 ranks, so 50 always means 'the median player of the comparison pool')."""
+    n = len(labels)
+    ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    closed = np.append(ang, ang[0])
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_ylim(0, 100)
+    ax.set_yticks([25, 50, 75, 100])
+    ax.set_yticklabels([])
+    ax.set_xticks(ang)
+    ax.set_xticklabels(labels, fontsize=fontsize)
+    ax.tick_params(axis="x", pad=9)
+    ax.grid(color="#cccccc", lw=0.6)
+    ax.spines["polar"].set_color("#cccccc")
+    ax.plot(closed, [50] * (n + 1), color="#7f8c8d", lw=1.1, ls="--")
+    for name, vals, color, filled in series:
+        v = np.append(vals, vals[0])
+        ax.plot(closed, v, color=color, lw=2, label=name)
+        ax.scatter(ang, vals, color=color, s=18, zorder=4)
+        if filled:
+            ax.fill(closed, v, color=color, alpha=0.22)
+    if title:
+        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=22)
+
+
+def plot_player_radar_grid(rows, radar_sets=None, ncols=2):
+    """rows: [(label, player_season_totals row, color), ...] - the row must already carry the *_pctile columns
+    player_season_totals() computes. One radar per entry in radar_sets (PLAYER_RADAR_SETS by default), grid
+    auto-sized to fit however many pillars are given."""
+    radar_sets = radar_sets or PLAYER_RADAR_SETS
+    nrows = -(-len(radar_sets) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5.75 * nrows), subplot_kw={"projection": "polar"})
+    axes_flat = np.array(axes).reshape(-1)
+    for ax in axes_flat[len(radar_sets):]:
+        ax.axis("off")
+    for ax, (set_name, spec) in zip(axes_flat, radar_sets.items()):
+        keep = [(lab, col) for lab, col in spec if any(pd.notna(r.get(col)) for _, r, _ in rows)]
+        if len(keep) < 3:
+            ax.axis("off")
+            ax.set_title(f"{set_name}: not enough data", fontsize=10)
+            continue
+        labels = [lab for lab, _ in keep]
+        series = []
+        for i, (name, r, color) in enumerate(rows):
+            vals = np.array([r.get(col, 0) if pd.notna(r.get(col)) else 0 for _, col in keep])
+            series.append((name, vals, color, i == len(rows) - 1 or len(rows) == 1))
+        draw_radar(ax, labels, series, title=set_name)
+    handles, names = axes_flat[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, names, loc="upper center", ncol=len(names), fontsize=9.5, frameon=False, bbox_to_anchor=(0.5, 0.995))
+    fig.subplots_adjust(left=0.1, right=0.9, top=0.92, bottom=0.05, wspace=0.65, hspace=0.42)
+    return fig

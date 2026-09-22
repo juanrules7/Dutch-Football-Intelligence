@@ -912,35 +912,30 @@ with tab_ss:
             st.pyplot(fig)
             plt.close(fig)
 
-        st.divider()
-        st.markdown(f"#### {ss_club}: season attack zones and shots")
         ids = mc.attach_team(mc_players, mc_matches)
         ids = ids[(ids.league == ss_league) & (ids.season == ss_season) & (ids.team == ss_club)]
         team_heat = mc_heatmap[mc_heatmap.player_id.isin(ids.player_id)]
-        az1, az2 = st.columns(2)
-        with az1:
-            st.caption("Which side of the pitch this club's play happened on this season (own perspective - "
-                       "checked against known left/right-footed fullbacks, so it's not a home/away artefact).")
-            fig, ax = plt.subplots(figsize=(6.5, 1.4))
-            mc.plot_width_thirds(ax, team_heat)
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-            st.caption("Same split, attacking third only (x ≥ 66.7) - where the ball actually ends up near goal.")
-            fig, ax = plt.subplots(figsize=(6.5, 1.4))
-            mc.plot_width_thirds(ax, team_heat, min_x=200 / 3)
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-        with az2:
-            club_matches = mc_matches[(mc_matches.league == ss_league) & (mc_matches.season == ss_season)
-                                      & ((mc_matches.home == ss_club) | (mc_matches.away == ss_club))]
-            club_shots = mc_shots[mc_shots.match_id.isin(club_matches.match_id)]
-            club_shots = club_shots[club_shots.player_id.isin(ids.player_id.unique())]
-            pitch, fig, ax = mc.new_pitch(figsize=(6.5, 5.5))
-            mc.plot_shotmap(pitch, ax, club_shots, title=f"{ss_club}: every shot this season")
-            st.pyplot(fig)
-            plt.close(fig)
+
+        st.divider()
+        st.markdown(f"#### {ss_club}: season attack zones")
+        st.caption("Which side of the pitch this club's play happened on (own attacking perspective, not "
+                   "home/away - checked against known left/right-footed fullbacks). Darker band = more play there.")
+        zone_scope = st.radio("Zone", ["Whole pitch", "Attacking third only"], horizontal=True, key="ss_zone_scope")
+        pitch, fig, ax = mc.new_pitch(figsize=(9, 5.5))
+        mc.plot_width_thirds_pitch(pitch, ax, team_heat, min_x=200 / 3 if zone_scope == "Attacking third only" else None)
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.divider()
+        st.markdown(f"#### {ss_club}: every shot this season")
+        club_matches = mc_matches[(mc_matches.league == ss_league) & (mc_matches.season == ss_season)
+                                  & ((mc_matches.home == ss_club) | (mc_matches.away == ss_club))]
+        club_shots = mc_shots[mc_shots.match_id.isin(club_matches.match_id)]
+        club_shots = club_shots[club_shots.player_id.isin(ids.player_id.unique())]
+        pitch, fig, ax = mc.new_pitch(figsize=(9, 6.5))
+        mc.plot_shotmap(pitch, ax, club_shots, title=f"{ss_club}: every shot this season")
+        st.pyplot(fig)
+        plt.close(fig)
 
         st.divider()
         st.markdown("#### Rank the league on one stat")
@@ -1032,20 +1027,15 @@ with tab_mc:
 
         st.markdown("##### Attack zones: which side of the pitch each team played through")
         st.caption("Own attacking perspective (not home/away), all touches and attacking-third-only, side by side per team.")
+        mc_zone_scope = st.radio("Zone", ["Whole pitch", "Attacking third only"], horizontal=True, key="mc_zone_scope")
         az1, az2 = st.columns(2)
         for col, is_home, team_name in ((az1, True, mrow.home), (az2, False, mrow.away)):
             with col:
-                st.caption(f"**{team_name}**")
                 team_ids = mplayers.loc[mplayers.is_home == is_home, "player_id"]
                 team_heat = mheat[mheat.player_id.isin(team_ids)]
-                fig, ax = plt.subplots(figsize=(5.5, 1.3))
-                mc.plot_width_thirds(ax, team_heat)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-                fig, ax = plt.subplots(figsize=(5.5, 1.3))
-                mc.plot_width_thirds(ax, team_heat, min_x=200 / 3)
-                plt.tight_layout()
+                pitch, fig, ax = mc.new_pitch(figsize=(5.5, 3.8))
+                mc.plot_width_thirds_pitch(pitch, ax, team_heat, min_x=200 / 3 if mc_zone_scope == "Attacking third only" else None,
+                                           title=team_name)
                 st.pyplot(fig)
                 plt.close(fig)
 
